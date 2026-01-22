@@ -4,12 +4,17 @@
 import pandas as pd
 import numpy as np
 import joblib
+import json
+from datetime import datetime
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_squared_error, r2_score
 from xgboost import XGBRegressor
+
+RANDOM_STATE = 42
+MODEL_VERSION = "v1.0"
 
 # ------------------------------
 # 2. Load Dataset
@@ -48,6 +53,8 @@ df["official_video"] = df["official_video"].replace({"True": 1, "False": 0}).ast
 X = df.drop(["Track", "Stream"], axis=1)
 y = df["Stream"]
 
+feature_columns = X.columns.tolist()   # 🔥 Save exact feature order
+
 scaler = StandardScaler()
 X_scaled = scaler.fit_transform(X)
 
@@ -55,7 +62,7 @@ X_scaled = scaler.fit_transform(X)
 # 6. Train-Test Split
 # ------------------------------
 X_train, X_test, y_train, y_test = train_test_split(
-    X_scaled, y, test_size=0.2, random_state=42
+    X_scaled, y, test_size=0.2, random_state=RANDOM_STATE
 )
 
 # ------------------------------
@@ -63,7 +70,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 # ------------------------------
 rf = RandomForestRegressor(
     n_estimators=200,
-    random_state=42,
+    random_state=RANDOM_STATE,
     n_jobs=-1
 )
 
@@ -84,7 +91,7 @@ xgb = XGBRegressor(
     n_estimators=200,
     learning_rate=0.05,
     max_depth=6,
-    random_state=42,
+    random_state=RANDOM_STATE,
     objective="reg:squarederror"
 )
 
@@ -111,13 +118,13 @@ print("RMSE:", ensemble_rmse)
 print("R2 Score:", ensemble_r2)
 
 # ------------------------------
-# 10. Save Trained Artifacts
+# 10. Save Trained Artifacts (for Flask + Render)
 # ------------------------------
 joblib.dump(rf, "rf_model.pkl")
 joblib.dump(xgb, "xgb_model.pkl")
 joblib.dump(scaler, "scaler.pkl")
 joblib.dump(label_encoders, "label_encoders.pkl")
-joblib.dump(X.columns.tolist(), "X_columns.pkl")
+joblib.dump(feature_columns, "X_columns.pkl")
 
 print("\n✅ All artifacts saved successfully:")
 print(" - rf_model.pkl")
@@ -125,3 +132,33 @@ print(" - xgb_model.pkl")
 print(" - scaler.pkl")
 print(" - label_encoders.pkl")
 print(" - X_columns.pkl")
+
+# ------------------------------
+# 11. Save Training Metadata (Model Versioning)
+# ------------------------------
+metadata = {
+    "model_version": MODEL_VERSION,
+    "trained_on": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "dataset": "cleaned_dataset.csv",
+    "random_state": RANDOM_STATE,
+    "features_used": feature_columns,
+    "metrics": {
+        "random_forest": {
+            "rmse": float(rf_rmse),
+            "r2": float(rf_r2)
+        },
+        "xgboost": {
+            "rmse": float(xgb_rmse),
+            "r2": float(xgb_r2)
+        },
+        "ensemble": {
+            "rmse": float(ensemble_rmse),
+            "r2": float(ensemble_r2)
+        }
+    }
+}
+
+with open("model_metadata.json", "w") as f:
+    json.dump(metadata, f, indent=4)
+
+print("\n📌 Model metadata saved as model_metadata.json")
