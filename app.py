@@ -1,164 +1,79 @@
-# ------------------------------
-# 1. Import Libraries
-# ------------------------------
+from flask import Flask, request, jsonify
 import pandas as pd
 import numpy as np
 import joblib
-import json
-from datetime import datetime
+import os
 
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder, StandardScaler
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
-from xgboost import XGBRegressor
-
-RANDOM_STATE = 42
-MODEL_VERSION = "v1.0"
+app = Flask(__name__)
 
 # ------------------------------
-# 2. Load Dataset
+# Load trained artifacts
 # ------------------------------
-df = pd.read_csv("cleaned_dataset.csv")
-print("Dataset Loaded Successfully")
-print(df.head())
-print("Dataset Shape:", df.shape)
-
-# ------------------------------
-# 3. Data Cleaning & Missing Values
-# ------------------------------
-print("\nMissing Values Before:\n", df.isnull().sum())
-
-df.fillna(df.mean(numeric_only=True), inplace=True)
-
-print("\nMissing Values After:\n", df.isnull().sum())
+rf = joblib.load("rf_model.pkl")
+xgb = joblib.load("xgb_model.pkl")
+scaler = joblib.load("scaler.pkl")
+label_encoders = joblib.load("label_encoders.pkl")
+X_columns = joblib.load("X_columns.pkl")
 
 # ------------------------------
-# 4. Encoding Categorical Variables
+# Routes
 # ------------------------------
-label_encoders = {}
-cat_cols = ["Artist", "Album", "Album_type", "Title", "Channel", "most_playedon"]
+@app.route("/")
+def home():
+    return "🎵 Song Stream Prediction API is Running!"
 
-for col in cat_cols:
-    le = LabelEncoder()
-    df[col] = le.fit_transform(df[col])
-    label_encoders[col] = le
+@app.route("/health")
+def health():
+    return jsonify({"status": "ok"}), 200
 
-df["Licensed"] = df["Licensed"].replace({"True": 1, "False": 0}).astype(int)
-df["official_video"] = df["official_video"].replace({"True": 1, "False": 0}).astype(int)
+@app.route("/predict", methods=["POST"])
+def predict():
+    try:
+        data = request.json
 
-# ------------------------------
-# 5. Feature Selection & Scaling
-# ------------------------------
-X = df.drop(["Track", "Stream"], axis=1)
-y = df["Stream"]
+        required_fields = ["Artist", "Album_type", "Danceability", "Energy", "Tempo"]
+        for field in required_fields:
+            if field not in data:
+                return jsonify({"error": f"Missing field: {field}"}), 400
 
-feature_columns = X.columns.tolist()   # 🔥 Save exact feature order
+        # Unknown category handling
+        if data["Artist"] not in label_encoders["Artist"].classes_:
+            return jsonify({"error": "Unknown artist"}), 400
 
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+        if data["Album_type"] not in label_encoders["Album_type"].classes_:
+            return jsonify({"error": "Unknown album type"}), 400
 
-# ------------------------------
-# 6. Train-Test Split
-# ------------------------------
-X_train, X_test, y_train, y_test = train_test_split(
-    X_scaled, y, test_size=0.2, random_state=RANDOM_STATE
-)
+        artist_encoded = label_encoders["Artist"].transform([data["Artist"]])[0]
+        album_type_encoded = label_encoders["Album_type"].transform([data["Album_type"]])[0]
 
-# ------------------------------
-# 7. Train Random Forest Model
-# ------------------------------
-rf = RandomForestRegressor(
-    n_estimators=200,
-    random_state=RANDOM_STATE,
-    n_jobs=-1
-)
+        user_input = pd.DataFrame([{
+            "Artist": artist_encoded,
+            "Album_type": album_type_encoded,
+            "Danceability": float(data["Danceability"]),
+            "Energy": float(data["Energy"]),
+            "Tempo": float(data["Tempo"])
+        }])
 
-rf.fit(X_train, y_train)
-rf_pred = rf.predict(X_test)
+        # Fill remaining features with training means
+        for col in X_columns:
+            if col not in user_input.columns:
+                user_input[col] = 0
 
-rf_rmse = np.sqrt(mean_squared_error(y_test, rf_pred))
-rf_r2 = r2_score(y_test, rf_pred)
+        user_input = user_input[X_columns]
+        user_scaled = scaler.transform(user_input)
 
-print("\nRandom Forest Performance")
-print("RMSE:", rf_rmse)
-print("R2 Score:", rf_r2)
+        pred_stream = (rf.predict(user_scaled) + xgb.predict(user_scaled)) / 2
 
-# ------------------------------
-# 8. Train XGBoost Model
-# ------------------------------
-xgb = XGBRegressor(
-    n_estimators=200,
-    learning_rate=0.05,
-    max_depth=6,
-    random_state=RANDOM_STATE,
-    objective="reg:squarederror"
-)
+        return jsonify({
+            "Predicted_Stream": float(pred_stream[0])
+        })
 
-xgb.fit(X_train, y_train)
-xgb_pred = xgb.predict(X_test)
-
-xgb_rmse = np.sqrt(mean_squared_error(y_test, xgb_pred))
-xgb_r2 = r2_score(y_test, xgb_pred)
-
-print("\nXGBoost Performance")
-print("RMSE:", xgb_rmse)
-print("R2 Score:", xgb_r2)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ------------------------------
-# 9. Ensemble Evaluation
+# Start Flask (Render-compatible)
 # ------------------------------
-ensemble_pred = (rf_pred + xgb_pred) / 2
-
-ensemble_rmse = np.sqrt(mean_squared_error(y_test, ensemble_pred))
-ensemble_r2 = r2_score(y_test, ensemble_pred)
-
-print("\nEnsemble Model Performance")
-print("RMSE:", ensemble_rmse)
-print("R2 Score:", ensemble_r2)
-
-# ------------------------------
-# 10. Save Trained Artifacts (for Flask + Render)
-# ------------------------------
-joblib.dump(rf, "rf_model.pkl")
-joblib.dump(xgb, "xgb_model.pkl")
-joblib.dump(scaler, "scaler.pkl")
-joblib.dump(label_encoders, "label_encoders.pkl")
-joblib.dump(feature_columns, "X_columns.pkl")
-
-print("\n✅ All artifacts saved successfully:")
-print(" - rf_model.pkl")
-print(" - xgb_model.pkl")
-print(" - scaler.pkl")
-print(" - label_encoders.pkl")
-print(" - X_columns.pkl")
-
-# ------------------------------
-# 11. Save Training Metadata (Model Versioning)
-# ------------------------------
-metadata = {
-    "model_version": MODEL_VERSION,
-    "trained_on": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "dataset": "cleaned_dataset.csv",
-    "random_state": RANDOM_STATE,
-    "features_used": feature_columns,
-    "metrics": {
-        "random_forest": {
-            "rmse": float(rf_rmse),
-            "r2": float(rf_r2)
-        },
-        "xgboost": {
-            "rmse": float(xgb_rmse),
-            "r2": float(xgb_r2)
-        },
-        "ensemble": {
-            "rmse": float(ensemble_rmse),
-            "r2": float(ensemble_r2)
-        }
-    }
-}
-
-with open("model_metadata.json", "w") as f:
-    json.dump(metadata, f, indent=4)
-
-print("\n📌 Model metadata saved as model_metadata.json")
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render injects PORT
+    app.run(host="0.0.0.0", port=port)
